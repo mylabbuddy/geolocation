@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reverse Geocoding App</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for a cleaner UI */
+        body {
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            background-color: #f7f9fb;
+        }
+        .card {
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 5px 15px -5px rgba(0, 0, 0, 0.04);
+        }
+        .loading-ring {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            border: 3px solid rgba(255, 255, 255, .3);
+            border-radius: 50%;
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center p-4">
+
+    <div id="app-container" class="w-full max-w-lg mx-auto p-6 bg-white rounded-xl card transition-all duration-300">
+        <h1 class="text-3xl font-extrabold text-gray-800 mb-2">Location Finder</h1>
+        <p class="text-gray-500 mb-6">Find your current physical location (city/state) using your browser and reverse geocoding.</p>
+
+        <!-- Main Button -->
+        <button id="findLocationBtn"
+                class="w-full flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150 ease-in-out">
+            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+            Get My Current Location
+        </button>
+
+        <!-- Loading Indicator -->
+        <div id="loadingIndicator" class="hidden mt-6 text-center">
+            <div class="loading-ring mx-auto mb-2 !border-top-color:#4F46E5 !border-white"></div>
+            <p class="text-indigo-600 font-medium">Fetching location data...</p>
+        </div>
+
+        <!-- Result Display -->
+        <div id="resultContainer" class="mt-8 pt-4 border-t border-gray-200 hidden">
+            <h2 class="text-xl font-bold text-gray-700 mb-4">Location Details</h2>
+
+            <div class="space-y-3">
+                <p class="text-lg">
+                    <span class="font-semibold text-gray-600">Coordinates:</span>
+                    <span id="coordsDisplay" class="text-indigo-600 font-mono text-sm ml-2"></span>
+                </p>
+                <div class="p-4 bg-green-50 rounded-lg border border-green-200">
+                    <p class="text-lg font-medium text-green-800">
+                        <svg class="w-6 h-6 inline mr-2 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                        <span id="cityStateDisplay" class="font-extrabold"></span>
+                    </p>
+                    <p id="detailsDisplay" class="text-sm text-green-700 mt-1"></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Error Message -->
+        <div id="errorContainer" class="mt-6 p-4 bg-red-100 border border-red-400 text-red-700 rounded-lg hidden">
+            <p id="errorMessage" class="font-medium"></p>
+        </div>
+    </div>
+
+    <script type="module">
+        // Import Firebase for standard Canvas environment setup (even if not using Firestore for this feature)
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Use the globally available environment variables
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        let db, auth;
+
+        // DOM elements
+        const findLocationBtn = document.getElementById('findLocationBtn');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const resultContainer = document.getElementById('resultContainer');
+        const errorContainer = document.getElementById('errorContainer');
+        const errorMessage = document.getElementById('errorMessage');
+        const coordsDisplay = document.getElementById('coordsDisplay');
+        const cityStateDisplay = document.getElementById('cityStateDisplay');
+        const detailsDisplay = document.getElementById('detailsDisplay');
+
+        // --- Utility Functions ---
+
+        /**
+         * Hides all result/error/loading indicators and resets the button state.
+         * @param {string} text - The text to restore on the button.
+         */
+        function resetUI(text) {
+            findLocationBtn.disabled = false;
+            findLocationBtn.innerHTML = `<svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>${text}`;
+            loadingIndicator.classList.add('hidden');
+            resultContainer.classList.add('hidden');
+            errorContainer.classList.add('hidden');
+        }
+
+        /**
+         * Displays an error message in the dedicated container.
+         * @param {string} message - The error message to display.
+         */
+        function showError(message) {
+            resetUI('Try Again');
+            errorMessage.textContent = message;
+            errorContainer.classList.remove('hidden');
+        }
+
+        // --- Geolocation and Reverse Geocoding Logic ---
+
+        /**
+         * Handles the successful retrieval of geographic position.
+         * @param {GeolocationPosition} position - The object containing latitude and longitude.
+         */
+        async function geolocationSuccess(position) {
+            const latitude = position.coords.latitude;
+            const longitude = position.coords.longitude;
+            const apiUrl = `https://api-bdc.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}`;
+
+            // Update UI with raw coordinates
+            coordsDisplay.textContent = `${latitude.toFixed(15)}, ${longitude.toFixed(15)}`;
+
+            try {
+                const response = await fetch(apiUrl);
+                if (!response.ok) {
+                    throw new Error(`Reverse Geocoding failed with status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // Extract relevant location data from the API response
+                const city = data.city || data.locality || 'Unknown City';
+                const state = data.principalSubdivision || data.countryName || 'Unknown State/Region';
+                const locality = data.locality || '';
+                const country = data.countryName || '';
+                const postcode = data.postcode || '';
+
+                // Display the final result
+                cityStateDisplay.textContent = `${locality}, ${city}, ${state}`;
+                detailsDisplay.textContent = `Latitude: ${latitude.toFixed(6)}, Longitude: ${longitude.toFixed(6)}. Country: ${country}, Zip/Postcode: ${postcode}`;
+
+                // Show results and hide loading
+                resetUI('Location Found!');
+                findLocationBtn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+                findLocationBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+                resultContainer.classList.remove('hidden');
+
+            } catch (error) {
+                console.error("Reverse Geocoding Error:", error);
+                showError(`Failed to find location details. ${error.message}.`);
+            }
+        }
+
+        /**
+         * Handles errors during the geolocation attempt.
+         * @param {GeolocationPositionError} error - The error object.
+         */
+        function geolocationError(error) {
+            let message;
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    message = "Permission Denied. Please enable location services for this website.";
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    message = "Position Unavailable. Your location could not be determined.";
+                    break;
+                case error.TIMEOUT:
+                    message = "Request Timed Out. Try again or check your connection.";
+                    break;
+                default:
+                    message = `An unknown error occurred: ${error.message}`;
+            }
+            console.error("Geolocation Error:", error);
+            showError(message);
+        }
+
+        /**
+         * Main function to start the geolocation process.
+         */
+        function findLocation() {
+            resetUI('Getting Location...'); // Reset first, then update for loading
+            
+            // Show loading state
+            findLocationBtn.disabled = true;
+            findLocationBtn.innerHTML = `<div class="loading-ring mr-2"></div> Please Wait...`;
+            loadingIndicator.classList.remove('hidden');
+            
+            // Check if geolocation is supported
+            if (!navigator.geolocation) {
+                showError("Geolocation is not supported by your browser.");
+                return;
+            }
+
+            // Options for geolocation
+            const options = {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            };
+
+            // Request the current position
+            navigator.geolocation.getCurrentPosition(geolocationSuccess, geolocationError, options);
+        }
+
+        // --- Initialization and Event Listeners ---
+
+        /**
+         * Initializes Firebase and sets up the app.
+         */
+        async function initializeAppAndAuth() {
+            if (firebaseConfig) {
+                setLogLevel('error');
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                try {
+                    // Sign in using the custom token if provided, otherwise sign in anonymously
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("Firebase initialized and signed in with custom token.");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("Firebase initialized and signed in anonymously.");
+                    }
+                } catch (error) {
+                    console.error("Firebase Auth Error:", error);
+                }
+            } else {
+                console.warn("Firebase config not found. Running without Firebase services.");
+            }
+        }
+
+        // Wait for the DOM to load before adding listeners
+        window.onload = function() {
+            initializeAppAndAuth();
+            findLocationBtn.addEventListener('click', findLocation);
+        };
+    </script>
+</body>
+</html>
